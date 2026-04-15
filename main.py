@@ -1,0 +1,197 @@
+"""manga-bench — Benchmark SOTA models for manga text detection, OCR, and translation.
+
+Usage:
+    python main.py detect                              # Run all detection models
+    python main.py detect --model rtdetr               # Run specific model
+    python main.py detect --model rtdetr --model ctd   # Run multiple models
+    python main.py ocr                                 # Run all OCR models
+    python main.py ocr --model manga_ocr               # Run specific model
+"""
+
+import time
+import argparse
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def add_common_args(parser: argparse.ArgumentParser) -> None:
+    """Add shared CLI arguments to a subparser."""
+    parser.add_argument(
+        "--annotation", type=str, default="dataset/open-mantra-dataset/annotation.json",
+        help="Path to annotation.json",
+    )
+    parser.add_argument(
+        "--dataset-root", type=str, default="dataset/open-mantra-dataset",
+        help="Root directory of the dataset",
+    )
+    parser.add_argument(
+        "--model", type=str, action="append", default=None,
+        help="Model(s) to run. Omit to run all available.",
+    )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="Directory to save output (visualizations, etc.)",
+    )
+    parser.add_argument(
+        "--per-page", type=str, default=None, metavar="FILE",
+        help="Save per-page results to a text file",
+    )
+
+
+def select_models(available: dict, requested: list[str] | None) -> dict:
+    """Filter available models by user request."""
+    if not requested:
+        return available
+    selected = {}
+    for name in requested:
+        if name in available:
+            selected[name] = available[name]
+        else:
+            print(f"[WARN] Model '{name}' not available. Options: {list(available.keys())}")
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# detect subcommand
+# ---------------------------------------------------------------------------
+
+def run_detect(args: argparse.Namespace) -> None:
+    from detectors import get_all_detectors
+    from detectors.benchmark import (
+        run_benchmark, print_results, write_per_page, print_comparison,
+    )
+
+    available = get_all_detectors()
+    if not available:
+        print("[ERROR] No detectors available. Install dependencies first.")
+        return
+
+    selected = select_models(available, args.model)
+    if not selected:
+        return
+
+    print(f"[INFO] Running {len(selected)} model(s): {list(selected.keys())}")
+
+    all_results = {}
+    for name, detector_cls in selected.items():
+        print(f"\n{'=' * 70}")
+        print(f"[INFO] Loading {name}...")
+        try:
+            detector = detector_cls()
+        except Exception as e:
+            print(f"[ERROR] Failed to load {name}: {e}")
+            continue
+
+        output_dir = Path(args.output) / name if args.output else None
+        print(f"[INFO] Running benchmark with {name}...")
+        start = time.time()
+        results = run_benchmark(
+            detector, args.annotation, args.dataset_root,
+            output_dir=output_dir,
+        )
+        elapsed = time.time() - start
+
+        all_results[name] = {"results": results, "time": elapsed}
+        print_results(results)
+        print(f"[INFO] {name} completed in {elapsed:.1f}s")
+
+        if args.per_page:
+            per_page_file = args.per_page
+            if len(selected) > 1:
+                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".txt"
+                per_page_file = f"{base}_{name}{ext}"
+            write_per_page(results, per_page_file, name)
+
+    if len(all_results) > 1:
+        print_comparison(all_results)
+
+
+# ---------------------------------------------------------------------------
+# ocr subcommand
+# ---------------------------------------------------------------------------
+
+def run_ocr(args: argparse.Namespace) -> None:
+    from recognizers import get_all_recognizers
+    from recognizers.benchmark import (
+        run_ocr_benchmark, print_ocr_results, write_ocr_per_page, print_ocr_comparison,
+    )
+
+    available = get_all_recognizers()
+    if not available:
+        print("[ERROR] No recognizers available. Install dependencies first.")
+        return
+
+    selected = select_models(available, args.model)
+    if not selected:
+        return
+
+    print(f"[INFO] Running {len(selected)} OCR model(s): {list(selected.keys())}")
+
+    all_results = {}
+    for name, recognizer_cls in selected.items():
+        print(f"\n{'=' * 70}")
+        print(f"[INFO] Loading {name}...")
+        try:
+            recognizer = recognizer_cls()
+        except Exception as e:
+            print(f"[ERROR] Failed to load {name}: {e}")
+            continue
+
+        output_dir = Path(args.output) / name if args.output else None
+        print(f"[INFO] Running OCR benchmark with {name}...")
+        start = time.time()
+        results = run_ocr_benchmark(
+            recognizer, args.annotation, args.dataset_root,
+            output_dir=output_dir,
+        )
+        elapsed = time.time() - start
+
+        all_results[name] = {"results": results, "time": elapsed}
+        print_ocr_results(results, model_name=name)
+        print(f"[INFO] {name} completed in {elapsed:.1f}s")
+
+        if args.per_page:
+            per_page_file = args.per_page
+            if len(selected) > 1:
+                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".txt"
+                per_page_file = f"{base}_{name}{ext}"
+            write_ocr_per_page(results, per_page_file, name)
+
+    if len(all_results) > 1:
+        print_ocr_comparison(all_results)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="manga-bench: Benchmark SOTA models for manga text detection, OCR, and translation.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # detect
+    detect_parser = subparsers.add_parser("detect", help="Run text detection benchmark")
+    add_common_args(detect_parser)
+
+    # ocr
+    ocr_parser = subparsers.add_parser("ocr", help="Run OCR recognition benchmark")
+    add_common_args(ocr_parser)
+
+    args = parser.parse_args()
+
+    if args.command == "detect":
+        run_detect(args)
+    elif args.command == "ocr":
+        run_ocr(args)
+
+
+if __name__ == "__main__":
+    main()

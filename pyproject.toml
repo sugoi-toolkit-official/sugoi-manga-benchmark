@@ -1,0 +1,25 @@
+[project]
+name = "manga-bench"
+version = "0.1.0"
+description = "Benchmark SOTA models for manga text detection, OCR, and translation"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.12"
+dependencies = [
+    "easyocr>=1.7.2",
+    "huggingface-hub>=1.10.2",
+    "manga-ocr>=0.1.14",
+    "numpy>=2.4.4",
+    "onnxruntime>=1.24.4",
+    "opencv-python>=4.13.0.92",
+    "paddleocr>=3.4.1",
+    "pillow>=10.4.0",
+    "python-dotenv>=1.2.2",
+    "rapidfuzz>=3.14.5",
+    "scipy>=1.17.1",
+    "surya-ocr>=0.17.1",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.5.4",
+    "ultralytics>=8.4.37",
+]
