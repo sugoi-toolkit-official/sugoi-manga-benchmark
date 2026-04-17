@@ -33,3 +33,4 @@ comic-text-detector/
 
 # Dataset (use git submodule or download separately)
 dataset/open-mantra-dataset/
+results

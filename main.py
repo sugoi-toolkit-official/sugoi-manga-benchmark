@@ -8,6 +8,8 @@ Usage:
     python main.py ocr --model manga_ocr               # Run specific model
 """
 
+import asyncio
+import os
 import time
 import argparse
 from pathlib import Path
@@ -168,6 +170,82 @@ def run_ocr(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# translate subcommand
+# ---------------------------------------------------------------------------
+
+def run_translate(args: argparse.Namespace) -> None:
+    from translators import get_all_translators
+    from translators.benchmark import (
+        run_translate_benchmark, print_translation_results,
+        write_translation_per_page, print_translation_comparison,
+    )
+
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print("[ERROR] OPENROUTER_API_KEY not set. Copy .env.example → .env "
+              "and add your OpenRouter key (https://openrouter.ai/keys).")
+        return
+
+    available = get_all_translators()
+    if not available:
+        print("[ERROR] No translators available.")
+        return
+
+    selected = select_models(available, args.model)
+    if not selected:
+        return
+
+    print(f"[INFO] Running {len(selected)} translator(s) in parallel: "
+          f"{list(selected.keys())}")
+    print(f"[INFO] Per-model concurrency: {args.concurrency}"
+          + (f", max_pages: {args.max_pages}" if args.max_pages else ""))
+
+    async def benchmark_one(name: str, factory, position: int):
+        try:
+            translator = factory()
+        except Exception as e:
+            print(f"[ERROR] [{name}] load failed: {e}")
+            return name, None, 0.0
+        start = time.time()
+        try:
+            results = await run_translate_benchmark(
+                translator, args.annotation, args.dataset_root,
+                concurrency=args.concurrency, max_pages=args.max_pages,
+                progress_desc=name, progress_position=position,
+            )
+        except Exception as e:
+            print(f"[ERROR] [{name}] benchmark failed: {e}")
+            return name, None, time.time() - start
+        elapsed = time.time() - start
+        return name, results, elapsed
+
+    async def run_all():
+        return await asyncio.gather(
+            *(benchmark_one(name, factory, idx)
+              for idx, (name, factory) in enumerate(selected.items()))
+        )
+
+    outputs = asyncio.run(run_all())
+
+    all_results: dict[str, dict] = {}
+    for name, results, elapsed in outputs:
+        if results is None:
+            continue
+        all_results[name] = {"results": results, "time": elapsed}
+        print_translation_results(results, model_name=name)
+
+        if args.per_page:
+            per_page_file = args.per_page
+            if len(selected) > 1:
+                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".tsv"
+                slug_safe = name.replace("/", "_")
+                per_page_file = f"{base}_{slug_safe}{ext}"
+            write_translation_per_page(results, per_page_file, name)
+
+    if len(all_results) > 1:
+        print_translation_comparison(all_results)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -185,12 +263,26 @@ def main():
     ocr_parser = subparsers.add_parser("ocr", help="Run OCR recognition benchmark")
     add_common_args(ocr_parser)
 
+    # translate
+    translate_parser = subparsers.add_parser("translate", help="Run translation benchmark")
+    add_common_args(translate_parser)
+    translate_parser.add_argument(
+        "--concurrency", type=int, default=4,
+        help="Max concurrent API calls (default: 4)",
+    )
+    translate_parser.add_argument(
+        "--max-pages", type=int, default=None,
+        help="Debug: limit total pages processed across the whole dataset",
+    )
+
     args = parser.parse_args()
 
     if args.command == "detect":
         run_detect(args)
     elif args.command == "ocr":
         run_ocr(args)
+    elif args.command == "translate":
+        run_translate(args)
 
 
 if __name__ == "__main__":

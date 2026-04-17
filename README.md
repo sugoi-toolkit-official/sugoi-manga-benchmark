@@ -100,7 +100,54 @@ python main.py ocr --model manga_ocr --model paddleocr  # multiple
 
 ## Translation Benchmark
 
-Coming soon.
+Evaluates LLM translators on Japanese-to-English manga translation using ground-truth text from the dataset.
+Translation is line-by-line per page with prior (ja, en) pairs stacked into the prompt as inline context; history
+resets on each new page. History uses ground-truth EN (teacher-forcing), so calls within a page are independent
+and can run in parallel. Metric: corpus-level BLEU (`sacrebleu`).
+
+### Available Models
+
+All 5 run via [OpenRouter](https://openrouter.ai/). Slugs are loaded from [`translators/models.json`](translators/models.json):
+
+| Slug | Provider |
+|------|----------|
+| `openai/gpt-5.4` | OpenAI |
+| `anthropic/claude-sonnet-4.6` | Anthropic |
+| `google/gemini-3-flash-preview` | Google |
+| `x-ai/grok-4.20` | xAI |
+| `deepseek/deepseek-v3.2` | DeepSeek |
+
+### Setup
+
+```bash
+# Add OpenRouter key to .env (see .env.example)
+echo "OPENROUTER_API_KEY=sk-or-v1-..." >> .env
+```
+
+### Usage
+
+```bash
+python main.py translate                                    # run all models in models.json
+python main.py translate --model deepseek/deepseek-v3.2     # run one model
+python main.py translate --model openai/gpt-5.4 --model deepseek/deepseek-v3.2   # multiple
+python main.py translate --max-pages 5                      # debug: first 5 pages only
+python main.py translate --concurrency 8                    # override default 4
+python main.py translate --per-page results.tsv             # save per-entry TSV
+```
+
+`--per-page` writes a TSV with one row per text entry (columns: `book`, `page`, `entry_idx`, `sentence_bleu`, `gt_en`, `pred_en`).
+
+### Results (OpenMantra, full dataset, 5 models run in parallel)
+
+| Model | BLEU | Time |
+|-------|------|------|
+| `deepseek/deepseek-v3.2` | **18.16** | 1273.7s |
+| `anthropic/claude-sonnet-4.6` | 17.44 | 967.2s |
+| `openai/gpt-5.4` | 16.52 | 461.8s |
+| `x-ai/grok-4.20` | 15.65 | 329.7s |
+| `google/gemini-3-flash-preview` | 15.32 | 645.0s |
+
+Sorted by BLEU. `Time` is wall-clock for that model (all 5 models run concurrently, so total elapsed ≈ the slowest model, not the sum).
 
 ## Adding a New Model
 
