@@ -40,11 +40,13 @@ All 5 are OpenRouter slugs. The same `OpenRouterTranslator` class is instantiate
 
 ```
 translators/
-├── __init__.py        # registry: load models.json → {slug: lambda: OpenRouterTranslator(slug)}
+├── __init__.py        # registry: load models.json → {slug: zero-arg factory}
 ├── benchmark.py       # abstract Translator, run_translate_benchmark, BLEU, console + per-page output
 ├── openrouter.py      # OpenRouterTranslator(model_id) — uses openai.AsyncOpenAI w/ OpenRouter base_url
 └── models.json        # model slug list
 ```
+
+**Registry contract:** `get_all_translators()` returns `dict[str, Callable[[], Translator]]` — zero-arg factories (built via `functools.partial(OpenRouterTranslator, slug)`) so the call site in [main.py](../../../main.py) stays uniform with `detector_cls()` / `recognizer_cls()`. Importing `openai` happens inside `OpenRouterTranslator.__init__`, not at registry-build time, so missing dependency still surfaces as a per-model `[WARN]` the same way existing detectors/recognizers do.
 
 New in repo root:
 - [main.py](../../../main.py): add `translate` subparser + `run_translate` function.
@@ -64,6 +66,8 @@ class Translator(ABC):
 ```
 
 Why async: 214 pages × ~7 entries × 5 models ≈ 7.5k calls per model. Concurrency needed. Default concurrency = 4 (semaphore) — async-first keeps the code simple.
+
+**Main integration:** `run_translate_benchmark(...)` is an async function. [main.py](../../../main.py)'s `run_translate(args)` wraps it with `asyncio.run(run_translate_benchmark(...))` per model. Outer model loop stays sync, matching the `detect`/`ocr` shape.
 
 ## 6. Prompt format
 
@@ -103,20 +107,29 @@ Output post-processing:
 
 ## 7. Translation flow
 
+Teacher-forcing means history is known up front (GT `text_en`), so we build *all* prompt snapshots synchronously before firing any request. Then fire them in parallel, preserving order via `asyncio.gather`.
+
 ```
+# phase 1 (sync): build (prompt, metadata) list preserving order
+tasks = []                                  # flat list across the whole dataset
+task_meta = []                              # parallel list: (book, page, entry_idx, gt_en)
 for book in annotations:
   for page in book.pages:
     history = []
-    for entry in page.text:               # order as in JSON
-      if not entry.text_ja or not entry.text_en: skip
-      task = translate(entry.text_ja, history[:])
-      history.append((entry.text_ja, entry.text_en))   # GT EN
-      enqueue(task)
+    for entry in page.text:                 # order as in JSON
+      if not entry.text_ja or not entry.text_en: continue
+      snapshot = tuple(history)             # immutable copy per task
+      tasks.append(translate_with_semaphore(entry.text_ja, snapshot))
+      task_meta.append((book.title, page.image_path, entry))
+      history.append((entry.text_ja, entry.text_en))   # GT EN, for next line's prompt
 
-gather all tasks with asyncio.Semaphore(4)
+# phase 2 (async): run with global semaphore
+preds = await asyncio.gather(*tasks)        # order preserved
+
+# phase 3 (sync): group by page for BLEU aggregation via task_meta
 ```
 
-Concurrency = 4 global across the whole benchmark for one model. Models run sequentially (one model at a time, matching the existing detect/ocr pattern).
+`asyncio.gather` preserves input order, so `preds[i]` lines up with `task_meta[i]`. Concurrency = 4 global (semaphore shared across the whole dataset for one model). Models run sequentially (one model at a time, matching the existing detect/ocr pattern).
 
 ## 8. OpenRouter client
 
@@ -143,7 +156,7 @@ class OpenRouterTranslator(Translator):
 
 Retry: 3 attempts, exponential backoff (1s, 2s, 4s) on `openai.RateLimitError`, `openai.APIStatusError` with `status_code >= 500`, and `openai.APIConnectionError`. On final failure → return `""` and log a warning.
 
-Temperature: `0.3` (mild creativity, deterministic-ish). `max_tokens`: `256` (manga lines are short).
+Temperature: `0.0` (deterministic for reproducible benchmark — re-runs should give the same BLEU). `max_tokens`: `256` (manga lines are short).
 
 ## 9. BLEU metric
 
@@ -195,6 +208,8 @@ python main.py translate --max-pages 10                  # debug: limit for quic
 
 Reuses `add_common_args` from [main.py](../../../main.py) and adds `--concurrency` + `--max-pages` specific to `translate`.
 
+`--max-pages N`: total pages across the whole dataset after flattening books (not per-book). Applied at the iterator level — take the first N `(book, page)` pairs in annotation order, stop.
+
 ## 12. Error handling
 
 | Failure | Behavior |
@@ -235,6 +250,19 @@ openai/gpt-5.4                   32.45      142.3
 anthropic/claude-sonnet-4.6      34.12      168.1
 ...
 ```
+
+**`--per-page FILE` format (TSV, UTF-8):**
+
+Header row + one row per entry (not per page — per-entry gives the detail you actually want to inspect):
+
+```
+book	page	entry_idx	sentence_bleu	gt_en	pred_en
+tojime_no_siora	images/tojime_no_siora/ja/000.jpg	0	78.2	bound eye siora	Bound-Eye Siora
+tojime_no_siora	images/tojime_no_siora/ja/000.jpg	1	62.1	Mitsuki Kuchitaka	Mitsuki Kuchitaka
+...
+```
+
+`sentence_bleu` uses `sacrebleu.sentence_bleu` with `exp` smoothing. Tabs inside text fields are replaced with spaces to keep TSV parseable.
 
 ## 14. Dependencies
 
