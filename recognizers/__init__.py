@@ -14,21 +14,27 @@ def get_all_recognizers() -> dict:
         print(f"[WARN] manga-ocr unavailable: {e}")
 
     try:
+        from recognizers.manga_ocr_2025 import MangaOcr2025Recognizer
+        recognizers["manga_ocr_2025"] = MangaOcr2025Recognizer
+    except (ImportError, ModuleNotFoundError) as e:
+        print(f"[WARN] manga-ocr-2025 unavailable: {e}")
+
+    try:
         from recognizers.paddleocr_rec import PaddleOcrRecognizer
         recognizers["paddleocr"] = PaddleOcrRecognizer
     except (ImportError, ModuleNotFoundError) as e:
         print(f"[WARN] PaddleOCR unavailable: {e}")
 
     try:
+        from recognizers.paddleocr_vl_manga import PaddleOcrVlMangaRecognizer
+        recognizers["paddleocr_vl_manga"] = PaddleOcrVlMangaRecognizer
+    except (ImportError, ModuleNotFoundError) as e:
+        print(f"[WARN] PaddleOCR-VL-For-Manga unavailable: {e}")
+
+    try:
         from recognizers.surya_rec import SuryaRecognizer
         recognizers["surya"] = SuryaRecognizer
     except (ImportError, ModuleNotFoundError) as e:
         print(f"[WARN] Surya unavailable: {e}")
-
-    try:
-        from recognizers.easyocr_rec import EasyOcrRecognizer
-        recognizers["easyocr"] = EasyOcrRecognizer
-    except (ImportError, ModuleNotFoundError) as e:
-        print(f"[WARN] EasyOCR unavailable: {e}")
 
     return recognizers

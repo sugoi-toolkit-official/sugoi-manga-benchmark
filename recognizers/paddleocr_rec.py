@@ -15,12 +15,18 @@ class PaddleOcrRecognizer(TextRecognizer):
     """
 
     def __init__(self):
+        # Disable oneDNN: PaddlePaddle 3.x PIR runtime on Windows hits
+        # "ConvertPirAttribute2RuntimeAttribute not support" in onednn_instruction.
+        import os
+        os.environ.setdefault("FLAGS_use_mkldnn", "0")
+
         from paddleocr import PaddleOCR
         self.ocr = PaddleOCR(
             lang="japan",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            enable_mkldnn=False,
         )
 
     def recognize(self, image: Image.Image) -> str:
