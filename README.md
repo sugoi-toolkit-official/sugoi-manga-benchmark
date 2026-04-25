@@ -4,6 +4,10 @@ Benchmark SOTA models for manga/anime text detection, OCR recognition, and trans
 
 Uses the [OpenMantra](https://github.com/mantra-inc/open-mantra-dataset) dataset (5 manga series, 214 pages, 1592 text annotations) from the AAAI 2021 paper *"Towards Fully Automated Manga Translation"*.
 
+- [Text Detection Benchmark](#text-detection-benchmark)
+- [OCR Recognition Benchmark](#ocr-recognition-benchmark)
+- [Translation Benchmark](#translation-benchmark)
+
 ## Quick Start
 
 ```bash
@@ -15,13 +19,14 @@ cd ..
 # Install dependencies
 uv sync
 
-# Set up env vars (needed for gated models like AnimeText)
+# Set up env vars
 cp .env.example .env
-# Edit .env and add your HF_TOKEN
+# Edit .env — add HF_TOKEN (for gated models) and OPENROUTER_API_KEY (for VLM/LLM benchmarks)
 
 # Run benchmarks
 python main.py detect                       # text detection
 python main.py ocr                          # OCR recognition
+python main.py translate                    # translation
 ```
 
 ## Text Detection Benchmark
@@ -81,20 +86,36 @@ Metrics: CER (Character Error Rate), Accuracy, 1-NED (Normalized Edit Distance).
 
 ### Available Models
 
+**Local models** (run on GPU):
+
 | Model | Type | Source |
 |-------|------|--------|
 | `manga_ocr` | TrOCR (manga-specific) | [kha-white/manga-ocr-base](https://huggingface.co/kha-white/manga-ocr-base) |
 | `manga_ocr_2025` | TrOCR retrained 2025 | [jzhang533/manga-ocr-base-2025](https://huggingface.co/jzhang533/manga-ocr-base-2025) |
 | `paddleocr` | PaddleOCR (Japanese) | [PaddlePaddle/PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) |
 | `paddleocr_vl_manga` | PaddleOCR-VL fine-tuned for manga | [jzhang533/PaddleOCR-VL-For-Manga](https://huggingface.co/jzhang533/PaddleOCR-VL-For-Manga) |
-| `surya` | Surya OCR (multi-language) | [surya-ocr](https://github.com/VikParuchuri/surya) |
+
+**OpenRouter VLMs** (via API, requires `OPENROUTER_API_KEY`):
+
+Slugs are loaded from [`recognizers/models.json`](recognizers/models.json). Add or swap any vision-capable model from [openrouter.ai](https://openrouter.ai/models).
+
+| Slug | Provider |
+|------|----------|
+| `openai/gpt-5.5` | OpenAI |
+| `anthropic/claude-sonnet-4.6` | Anthropic |
+| `google/gemini-3-flash-preview` | Google |
+| `x-ai/grok-4.20` | xAI |
+| `deepseek/deepseek-v4-flash` | DeepSeek |
 
 ### Usage
 
 ```bash
-python main.py ocr                              # run all available models
-python main.py ocr --model manga_ocr            # run specific model
-python main.py ocr --model manga_ocr --model paddleocr  # multiple
+python main.py ocr                                          # run all available models
+python main.py ocr --model manga_ocr                        # run specific model
+python main.py ocr --model manga_ocr --model paddleocr      # run multiple
+python main.py ocr --model openrouter                       # run all OpenRouter VLMs
+python main.py ocr --model openrouter --concurrency 16      # override concurrency (default: 8)
+python main.py ocr --per-page results.txt                   # save per-page results
 ```
 
 ### Results (OpenMantra, 1586 samples)
@@ -104,20 +125,24 @@ python main.py ocr --model manga_ocr --model paddleocr  # multiple
 | `manga_ocr` | **0.0349** | **0.8733** | **0.9684** | 460.1s |
 | `manga_ocr_2025` | 0.0426 | 0.8506 | 0.9600 | 406.4s |
 | `paddleocr` | 0.1255 | 0.5303 | 0.8806 | 2216.8s |
-| `easyocr` | 0.9273 | 0.0101 | 0.0734 | 150.7s |
+| `anthropic/claude-sonnet-4.6` | 0.2972 | 0.4533 | 0.8718 | 264.0s |
+| `x-ai/grok-4.20` | 0.3709 | 0.3972 | 0.8188 | 109.9s |
+| `google/gemini-3.1-flash-lite-preview` | 0.1689 | 0.3436 | **0.8880** | 256.7s |
+| `openai/gpt-5.4` | 0.3384 | 0.2875 | 0.8231 | 130.9s |
+| `qwen/qwen3.6-plus` | 0.3241 | 0.2226 | 0.6903 | 203.9s |
 
-Sorted by Accuracy. `surya` and `paddleocr_vl_manga` not benchmarked yet.
+Sorted by Accuracy. `paddleocr_vl_manga` not benchmarked yet.
 
 <details>
 <summary>Per-book breakdown (Accuracy)</summary>
 
-| Book | manga_ocr | manga_ocr_2025 | paddleocr | easyocr |
-|------|-----------|-----------------|-----------|---------|
-| tojime_no_siora | **0.8889** | 0.8709 | 0.5706 | 0.0180 |
-| balloon_dream | **0.8758** | 0.8726 | 0.5732 | 0.0096 |
-| tencho_isoro | **0.8896** | 0.8669 | 0.5942 | 0.0130 |
-| boureisougi | **0.8864** | 0.8535 | 0.3004 | 0.0000 |
-| rasetugari | **0.8324** | 0.7961 | 0.5754 | 0.0084 |
+| Book | manga_ocr | manga_ocr_2025 | paddleocr | claude-sonnet-4.6 | grok-4.20 | gemini-3.1-flash-lite | gpt-5.4 | qwen3.6-plus |
+|------|-----------|----------------|-----------|-------------------|-----------|-----------------------|---------|--------------|
+| tojime_no_siora | **0.8889** | 0.8709 | 0.5706 | 0.4565 | 0.4144 | 0.3063 | 0.2613 | 0.1952 |
+| balloon_dream | **0.8758** | 0.8726 | 0.5732 | 0.4586 | 0.3981 | 0.2898 | 0.2420 | 0.1879 |
+| tencho_isoro | **0.8896** | 0.8669 | 0.5942 | 0.4838 | 0.3799 | 0.3669 | 0.3312 | 0.2305 |
+| boureisougi | **0.8864** | 0.8535 | 0.3004 | 0.4359 | 0.3626 | 0.3516 | 0.2674 | 0.2198 |
+| rasetugari | **0.8324** | 0.7961 | 0.5754 | 0.4330 | 0.4218 | 0.3994 | 0.3296 | 0.2737 |
 
 </details>
 
@@ -134,11 +159,11 @@ All 5 run via [OpenRouter](https://openrouter.ai/). Slugs are loaded from [`tran
 
 | Slug | Provider |
 |------|----------|
-| `openai/gpt-5.4` | OpenAI |
+| `openai/gpt-5.5` | OpenAI |
 | `anthropic/claude-sonnet-4.6` | Anthropic |
 | `google/gemini-3-flash-preview` | Google |
 | `x-ai/grok-4.20` | xAI |
-| `deepseek/deepseek-v3.2` | DeepSeek |
+| `deepseek/deepseek-v4-flash` | DeepSeek |
 
 ### Setup
 
@@ -151,8 +176,8 @@ echo "OPENROUTER_API_KEY=sk-or-v1-..." >> .env
 
 ```bash
 python main.py translate                                    # run all models in models.json
-python main.py translate --model deepseek/deepseek-v3.2     # run one model
-python main.py translate --model openai/gpt-5.4 --model deepseek/deepseek-v3.2   # multiple
+python main.py translate --model deepseek/deepseek-v4-flash # run one model
+python main.py translate --model openai/gpt-5.5 --model deepseek/deepseek-v4-flash  # multiple
 python main.py translate --max-pages 5                      # debug: first 5 pages only
 python main.py translate --concurrency 8                    # override default 4
 python main.py translate --per-page results.tsv             # save per-entry TSV
@@ -176,35 +201,19 @@ Sorted by BLEU. `Time` is wall-clock for that model (all 5 models run concurrent
 
 ### Detection
 
-1. Create `detectors/your_model.py`:
-
-```python
-from PIL import Image
-from detectors.benchmark import TextDetector
-
-class YourDetector(TextDetector):
-    def __init__(self):
-        # load your model here
-        pass
-
-    def detect(self, image: Image.Image) -> list[dict]:
-        # return list of {"x": int, "y": int, "w": int, "h": int}
-        ...
-```
-
-2. Register in `detectors/__init__.py`:
-
-```python
-try:
-    from detectors.your_model import YourDetector
-    detectors["your_model"] = YourDetector
-except Exception as e:
-    print(f"[WARN] your_model unavailable: {e}")
-```
+1. Create `detectors/your_model.py` subclassing `TextDetector`, implement `detect(image) -> list[dict]`
+2. Add a spec tuple to `_SPECS` in `detectors/__init__.py`
 
 ### OCR
 
-Same pattern: subclass `TextRecognizer` from `recognizers/benchmark.py`, implement `recognize(image) -> str`, register in `recognizers/__init__.py`.
+1. Create `recognizers/your_model.py` subclassing `TextRecognizer`, implement `recognize(image) -> str`
+2. Add a spec tuple to `_LOCAL_SPECS` in `recognizers/__init__.py`
+
+For OpenRouter VLMs, just add the model slug to `recognizers/models.json` — no code needed.
+
+### Translation
+
+Add the model slug to `translators/models.json` — no code needed.
 
 ## Dataset
 

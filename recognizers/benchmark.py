@@ -4,11 +4,14 @@ Evaluates OCR models on Japanese text recognition using ground-truth
 bounding boxes from the dataset. Metrics: CER, Accuracy, 1-NED.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from pathlib import Path
 from PIL import Image
 
 from rapidfuzz.distance import Levenshtein
+from tqdm import tqdm
+from tqdm.asyncio import tqdm as atqdm
 
 from utils import iter_pages, load_annotations, normalize_text
 
@@ -55,104 +58,112 @@ def compute_ned(pred: str, gt: str) -> float:
 # Benchmark loop
 # ---------------------------------------------------------------------------
 
-def run_ocr_benchmark(
+async def run_ocr_benchmark(
     recognizer: TextRecognizer,
     annotation_path: str,
     dataset_root: str,
     output_dir: Path | None = None,
+    concurrency: int = 8,
+    progress_desc: str | None = None,
+    progress_position: int = 0,
 ) -> dict:
-    """Run OCR benchmark on all text regions in the dataset."""
+    """Run OCR benchmark on all text regions in the dataset.
+
+    Phase 1: load all valid crops from every page into a flat list.
+    Phase 2: recognize — async recognizers use atqdm.gather with a semaphore;
+             sync recognizers use a plain tqdm loop.
+    Phase 3: group by page/book and compute metrics.
+    """
+    is_async = asyncio.iscoroutinefunction(recognizer.recognize)
+    sem = asyncio.Semaphore(concurrency)
+    desc = progress_desc or "recognizing"
+
     annotations = load_annotations(annotation_path)
 
-    all_cer = []
-    all_ned = []
-    all_acc = []
-    per_book: dict[str, dict] = {}
-    per_page = []
-
+    # Phase 1: collect all valid crops (full-page images are freed after cropping).
+    entries: list[tuple[str, str, int, str, object]] = []
     for book_title, image_rel_path, image, gt_entries in iter_pages(annotations, dataset_root):
-        if book_title not in per_book:
-            per_book[book_title] = {"cer": [], "ned": [], "acc": []}
-
-        page_cer = []
-        page_ned = []
-        page_acc = []
-        page_details = []
-
         for i, entry in enumerate(gt_entries):
             gt_text = entry.get("text_ja", "")
             if not gt_text:
                 continue
-
             x, y, w, h = entry["x"], entry["y"], entry["w"], entry["h"]
             img_w, img_h = image.size
-            x1 = max(0, x)
-            y1 = max(0, y)
-            x2 = min(img_w, x + w)
-            y2 = min(img_h, y + h)
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(img_w, x + w), min(img_h, y + h)
             if x2 <= x1 or y2 <= y1:
                 continue
+            entries.append((book_title, image_rel_path, i, gt_text, image.crop((x1, y1, x2, y2))))
 
-            cropped = image.crop((x1, y1, x2, y2))
-            pred_text = recognizer.recognize(cropped)
+    # Phase 2: recognize.
+    if is_async:
+        async def _bounded(crop):
+            async with sem:
+                return await recognizer.recognize(crop)
 
-            gt_norm = normalize_text(gt_text)
-            pred_norm = normalize_text(pred_text)
+        pred_texts = await atqdm.gather(
+            *[_bounded(crop) for *_, crop in entries],
+            desc=desc,
+            position=progress_position,
+            leave=True,
+            total=len(entries),
+        )
+    else:
+        pred_texts = []
+        for *_, crop in tqdm(entries, desc=desc, position=progress_position, leave=True):
+            pred_texts.append(recognizer.recognize(crop))
 
-            cer = compute_cer(pred_norm, gt_norm)
-            ned = compute_ned(pred_norm, gt_norm)
-            acc = 1.0 if pred_norm == gt_norm else 0.0
+    # Phase 3: score and group by page / book.
+    all_cer, all_ned, all_acc = [], [], []
+    per_book: dict[str, dict] = {}
+    per_page_map: dict[str, dict] = {}
 
-            page_cer.append(cer)
-            page_ned.append(ned)
-            page_acc.append(acc)
-            all_cer.append(cer)
-            all_ned.append(ned)
-            all_acc.append(acc)
-            per_book[book_title]["cer"].append(cer)
-            per_book[book_title]["ned"].append(ned)
-            per_book[book_title]["acc"].append(acc)
+    for (book_title, image_rel_path, i, gt_text, cropped), pred_text in zip(entries, pred_texts):
+        gt_norm = normalize_text(gt_text)
+        pred_norm = normalize_text(pred_text)
 
-            page_details.append({
-                "gt": gt_norm, "pred": pred_norm,
-                "cer": cer, "ned": ned, "acc": acc,
-            })
+        cer = compute_cer(pred_norm, gt_norm)
+        ned = compute_ned(pred_norm, gt_norm)
+        acc = 1.0 if pred_norm == gt_norm else 0.0
 
-            if output_dir is not None:
-                page_stem = Path(image_rel_path).stem
-                save_dir = output_dir / Path(image_rel_path).parent
-                save_dir.mkdir(parents=True, exist_ok=True)
-                cropped.save(save_dir / f"{page_stem}_{i}.png")
+        all_cer.append(cer)
+        all_ned.append(ned)
+        all_acc.append(acc)
 
-        if page_cer:
-            per_page.append({
-                "book": book_title,
-                "page": image_rel_path,
-                "cer": _avg(page_cer),
-                "ned": _avg(page_ned),
-                "acc": _avg(page_acc),
-                "samples": len(page_cer),
-                "details": page_details,
-            })
+        if book_title not in per_book:
+            per_book[book_title] = {"cer": [], "ned": [], "acc": []}
+        per_book[book_title]["cer"].append(cer)
+        per_book[book_title]["ned"].append(ned)
+        per_book[book_title]["acc"].append(acc)
 
-    per_book_agg = {}
-    for book, data in per_book.items():
-        if data["cer"]:
-            per_book_agg[book] = {
-                "cer": _avg(data["cer"]),
-                "ned": _avg(data["ned"]),
-                "acc": _avg(data["acc"]),
-                "samples": len(data["cer"]),
-            }
+        if image_rel_path not in per_page_map:
+            per_page_map[image_rel_path] = {"book": book_title, "cer": [], "ned": [], "acc": [], "details": []}
+        per_page_map[image_rel_path]["cer"].append(cer)
+        per_page_map[image_rel_path]["ned"].append(ned)
+        per_page_map[image_rel_path]["acc"].append(acc)
+        per_page_map[image_rel_path]["details"].append({"gt": gt_norm, "pred": pred_norm, "cer": cer, "ned": ned, "acc": acc})
 
-    overall = {
-        "cer": _avg(all_cer),
-        "ned": _avg(all_ned),
-        "acc": _avg(all_acc),
-        "samples": len(all_cer),
+        if output_dir is not None:
+            page_stem = Path(image_rel_path).stem
+            save_dir = output_dir / Path(image_rel_path).parent
+            save_dir.mkdir(parents=True, exist_ok=True)
+            cropped.save(save_dir / f"{page_stem}_{i}.png")
+
+    per_book_agg = {
+        book: {"cer": _avg(d["cer"]), "ned": _avg(d["ned"]), "acc": _avg(d["acc"]), "samples": len(d["cer"])}
+        for book, d in per_book.items() if d["cer"]
     }
+    per_page = [
+        {"book": d["book"], "page": page, "cer": _avg(d["cer"]), "ned": _avg(d["ned"]),
+         "acc": _avg(d["acc"]), "samples": len(d["cer"]), "details": d["details"]}
+        for page, d in per_page_map.items()
+    ]
 
-    return {"overall": overall, "per_book": per_book_agg, "per_page": per_page}
+    return {
+        "overall": {"cer": _avg(all_cer), "ned": _avg(all_ned), "acc": _avg(all_acc), "samples": len(all_cer)},
+        "per_book": per_book_agg,
+        "per_page": per_page,
+    }
 
 
 def _avg(values: list[float]) -> float:

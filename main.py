@@ -53,7 +53,9 @@ def select_models(available: dict, requested: list[str] | None) -> dict:
         return available
     selected = {}
     for name in requested:
-        if name in available:
+        if name == "openrouter":
+            selected.update({k: v for k, v in available.items() if "/" in k})
+        elif name in available:
             selected[name] = available[name]
         else:
             print(f"[WARN] Model '{name}' not available. Options: {list(available.keys())}")
@@ -186,6 +188,10 @@ def run_detect(args: argparse.Namespace) -> None:
 
 
 def run_ocr(args: argparse.Namespace) -> None:
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print("[WARN] OPENROUTER_API_KEY not set — OpenRouter VLM recognizers "
+              "will be skipped. Set it in .env to include them.")
+
     from recognizers import get_all_recognizers
     from recognizers.benchmark import (
         run_ocr_benchmark, print_ocr_results, write_ocr_per_page, print_ocr_comparison,
@@ -193,8 +199,10 @@ def run_ocr(args: argparse.Namespace) -> None:
 
     async def invoke(model, args, name, position):
         output_dir = Path(args.output) / name if args.output else None
-        return run_ocr_benchmark(
-            model, args.annotation, args.dataset_root, output_dir=output_dir,
+        return await run_ocr_benchmark(
+            model, args.annotation, args.dataset_root,
+            output_dir=output_dir, concurrency=args.concurrency,
+            progress_desc=name, progress_position=position,
         )
 
     run_task(TaskSpec(
@@ -259,6 +267,10 @@ def main() -> None:
 
     ocr_parser = subparsers.add_parser("ocr", help="Run OCR recognition benchmark")
     add_common_args(ocr_parser)
+    ocr_parser.add_argument(
+        "--concurrency", type=int, default=8,
+        help="Max concurrent API calls for async recognizers (default: 8)",
+    )
 
     translate_parser = subparsers.add_parser("translate", help="Run translation benchmark")
     add_common_args(translate_parser)
