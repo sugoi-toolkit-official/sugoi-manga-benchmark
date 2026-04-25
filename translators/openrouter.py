@@ -18,9 +18,24 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from tqdm import tqdm
 
 from utils import normalize_text
 from translators.benchmark import Translator
+
+
+_MAX_ATTEMPTS = 3
+
+
+def _log_retry(retry_state) -> None:
+    """Surface transient failures so they're not silent (plays nicely with tqdm)."""
+    exc = retry_state.outcome.exception()
+    self_obj = retry_state.args[0] if retry_state.args else None
+    model_id = getattr(self_obj, "model_id", "?")
+    tqdm.write(
+        f"[WARN] {model_id}: retry {retry_state.attempt_number}/{_MAX_ATTEMPTS} "
+        f"after {type(exc).__name__}: {exc}"
+    )
 
 
 SYSTEM_PROMPT = (
@@ -99,14 +114,15 @@ class OpenRouterTranslator(Translator):
         try:
             raw = await self._call_api(messages)
         except Exception as e:  # non-retryable or retries exhausted
-            print(f"[WARN] {self.model_id}: {type(e).__name__}: {e}")
+            tqdm.write(f"[WARN] {self.model_id}: {type(e).__name__}: {e}")
             return ""
         return post_process(raw)
 
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(_MAX_ATTEMPTS),
         wait=wait_exponential(multiplier=1, min=1, max=4),
         retry=retry_if_exception(_is_retryable),
+        before_sleep=_log_retry,
         reraise=True,
     )
     async def _call_api(self, messages: list[dict]) -> str:
