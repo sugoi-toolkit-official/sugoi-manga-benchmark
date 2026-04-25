@@ -9,7 +9,7 @@ HuggingFace: https://huggingface.co/jzhang533/PaddleOCR-VL-For-Manga
 import torch
 from PIL import Image
 from recognizers.benchmark import TextRecognizer
-from utils import get_device
+from utils import get_device, load_hf_model
 
 
 class PaddleOcrVlMangaRecognizer(TextRecognizer):
@@ -29,12 +29,10 @@ class PaddleOcrVlMangaRecognizer(TextRecognizer):
         self.device = get_device()
         self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
 
-        self.model = PaddleOCRVLForConditionalGeneration.from_pretrained(
-            self.MODEL_ID,
-            dtype=self.dtype,
-        ).to(self.device).eval()
-
-        image_processor = PaddleOCRVLImageProcessor.from_pretrained(self.MODEL_ID)
+        image_processor, self.model = load_hf_model(
+            PaddleOCRVLImageProcessor, PaddleOCRVLForConditionalGeneration,
+            self.MODEL_ID, self.device, dtype=self.dtype,
+        )
         tokenizer = AutoTokenizer.from_pretrained(self.MODEL_ID)
         self.processor = PaddleOCRVLProcessor(
             image_processor=image_processor, tokenizer=tokenizer,

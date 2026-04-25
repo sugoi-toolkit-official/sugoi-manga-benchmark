@@ -214,10 +214,13 @@ def _calc_metrics(totals: dict) -> dict:
 # Output
 # ---------------------------------------------------------------------------
 
-def print_results(results: dict) -> None:
+def print_results(results: dict, model_name: str = "") -> None:
     """Print benchmark results in a readable table format."""
+    title = "TEXT DETECTION BENCHMARK RESULTS"
+    if model_name:
+        title += f" - {model_name}"
     print("\n" + "=" * 70)
-    print("TEXT DETECTION BENCHMARK RESULTS")
+    print(title)
     print("=" * 70)
 
     print("\n--- Overall ---")

@@ -3,7 +3,9 @@
 import torch
 from PIL import Image
 from detectors.benchmark import TextDetector, xyxy_to_xywh
-from utils import get_device
+from utils import get_device, load_hf_model
+
+MODEL_ID = "ogkalu/comic-text-and-bubble-detector"
 
 
 class RTDetrDetector(TextDetector):
@@ -19,12 +21,9 @@ class RTDetrDetector(TextDetector):
         from transformers import RTDetrV2ForObjectDetection, RTDetrImageProcessor
 
         self.device = get_device()
-        self.processor = RTDetrImageProcessor.from_pretrained(
-            "ogkalu/comic-text-and-bubble-detector"
+        self.processor, self.model = load_hf_model(
+            RTDetrImageProcessor, RTDetrV2ForObjectDetection, MODEL_ID, self.device,
         )
-        self.model = RTDetrV2ForObjectDetection.from_pretrained(
-            "ogkalu/comic-text-and-bubble-detector"
-        ).to(self.device).eval()
         self.threshold = threshold
         # Label 1 = text_bubble, Label 2 = text_free
         self.text_labels = {1, 2}

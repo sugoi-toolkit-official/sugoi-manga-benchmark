@@ -11,6 +11,7 @@ from PIL import Image
 
 __all__ = [
     "get_device",
+    "load_hf_model",
     "load_annotations",
     "iter_pages",
     "normalize_text",
@@ -31,6 +32,17 @@ def get_device():
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def load_hf_model(processor_cls, model_cls, model_id: str, device, **model_kwargs):
+    """Load a HuggingFace processor + model pair, move model to device, eval mode.
+
+    Returns (processor, model). Extra kwargs (e.g. dtype=torch.bfloat16) are
+    forwarded to the model's from_pretrained().
+    """
+    processor = processor_cls.from_pretrained(model_id)
+    model = model_cls.from_pretrained(model_id, **model_kwargs).to(device).eval()
+    return processor, model
 
 
 # ---------------------------------------------------------------------------

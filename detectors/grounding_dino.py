@@ -3,7 +3,9 @@
 import torch
 from PIL import Image
 from detectors.benchmark import TextDetector, xyxy_to_xywh
-from utils import get_device
+from utils import get_device, load_hf_model
+
+MODEL_ID = "IDEA-Research/grounding-dino-base"
 
 
 class GroundingDinoDetector(TextDetector):
@@ -17,12 +19,9 @@ class GroundingDinoDetector(TextDetector):
         from transformers import AutoProcessor, GroundingDinoForObjectDetection
 
         self.device = get_device()
-        self.processor = AutoProcessor.from_pretrained(
-            "IDEA-Research/grounding-dino-base"
+        self.processor, self.model = load_hf_model(
+            AutoProcessor, GroundingDinoForObjectDetection, MODEL_ID, self.device,
         )
-        self.model = GroundingDinoForObjectDetection.from_pretrained(
-            "IDEA-Research/grounding-dino-base"
-        ).to(self.device).eval()
         self.threshold = threshold
         self.prompt = prompt
 

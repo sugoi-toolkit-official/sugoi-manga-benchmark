@@ -8,22 +8,24 @@ Usage:
     python main.py ocr --model manga_ocr               # Run specific model
 """
 
+import argparse
 import asyncio
 import os
 import time
-import argparse
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Awaitable, Callable
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# Shared CLI helpers
 # ---------------------------------------------------------------------------
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add shared CLI arguments to a subparser."""
     parser.add_argument(
         "--annotation", type=str, default="dataset/open-mantra-dataset/annotation.json",
         help="Path to annotation.json",
@@ -47,7 +49,6 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def select_models(available: dict, requested: list[str] | None) -> dict:
-    """Filter available models by user request."""
     if not requested:
         return available
     selected = {}
@@ -59,8 +60,105 @@ def select_models(available: dict, requested: list[str] | None) -> dict:
     return selected
 
 
+def _per_page_path(template: str, model_name: str, multi: bool,
+                   slug_safe: bool, default_ext: str) -> str:
+    if not multi:
+        return template
+    base = Path(template).stem
+    ext = Path(template).suffix or default_ext
+    safe_name = model_name.replace("/", "_") if slug_safe else model_name
+    return f"{base}_{safe_name}{ext}"
+
+
 # ---------------------------------------------------------------------------
-# detect subcommand
+# Generic task dispatcher
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskSpec:
+    label: str  # human-readable: "detection" | "OCR" | "translation"
+    registry: Callable[[], dict]
+    invoke: Callable[..., Awaitable[Any]]  # (model, args, name, position) -> results
+    printer: Callable[[Any, str], None]    # (results, model_name)
+    writer: Callable[[Any, str, str], None]  # (results, path, model_name)
+    compare: Callable[[dict], None]
+    per_page_ext: str
+    parallel: bool
+    slug_safe: bool = False
+
+
+async def _benchmark_one(spec: TaskSpec, factory, args, name: str, position: int):
+    """Load model, run benchmark, time it. Returns (name, results|None, elapsed)."""
+    print(f"\n{'=' * 70}")
+    print(f"[INFO] Loading {name}...")
+    try:
+        model = factory()
+    except Exception as e:
+        print(f"[ERROR] Failed to load {name}: {e}")
+        return name, None, 0.0
+
+    print(f"[INFO] Running {spec.label} benchmark with {name}...")
+    start = time.time()
+    try:
+        results = await spec.invoke(model, args, name, position)
+    except Exception as e:
+        print(f"[ERROR] [{name}] benchmark failed: {e}")
+        return name, None, time.time() - start
+    return name, results, time.time() - start
+
+
+def _record_result(spec: TaskSpec, args, all_results: dict, multi: bool,
+                   name: str, results: Any, elapsed: float) -> None:
+    if results is None:
+        return
+    all_results[name] = {"results": results, "time": elapsed}
+    spec.printer(results, name)
+    print(f"[INFO] {name} completed in {elapsed:.1f}s")
+    if args.per_page:
+        path = _per_page_path(args.per_page, name, multi, spec.slug_safe, spec.per_page_ext)
+        spec.writer(results, path, name)
+
+
+async def _run_task(spec: TaskSpec, args) -> None:
+    available = spec.registry()
+    if not available:
+        print(f"[ERROR] No {spec.label} models available. Install dependencies first.")
+        return
+
+    selected = select_models(available, args.model)
+    if not selected:
+        return
+
+    print(f"[INFO] Running {len(selected)} {spec.label} model(s): {list(selected.keys())}")
+    multi = len(selected) > 1
+    all_results: dict = {}
+
+    if spec.parallel:
+        # Build all tasks up front so tqdm bars stack via unique positions.
+        outputs = await asyncio.gather(*(
+            _benchmark_one(spec, factory, args, name, idx)
+            for idx, (name, factory) in enumerate(selected.items())
+        ))
+        for name, results, elapsed in outputs:
+            _record_result(spec, args, all_results, multi, name, results, elapsed)
+    else:
+        # Serial: print each model's results before the next loads, so long
+        # benchmarks surface progress incrementally.
+        for idx, (name, factory) in enumerate(selected.items()):
+            name, results, elapsed = await _benchmark_one(spec, factory, args, name, idx)
+            _record_result(spec, args, all_results, multi, name, results, elapsed)
+
+    if len(all_results) > 1:
+        spec.compare(all_results)
+
+
+def run_task(spec: TaskSpec, args) -> None:
+    asyncio.run(_run_task(spec, args))
+
+
+# ---------------------------------------------------------------------------
+# Subcommands — each just builds a TaskSpec and dispatches.
+# Imports are lazy so e.g. `translate` doesn't pull in torch.
 # ---------------------------------------------------------------------------
 
 def run_detect(args: argparse.Namespace) -> None:
@@ -69,54 +167,23 @@ def run_detect(args: argparse.Namespace) -> None:
         run_benchmark, print_results, write_per_page, print_comparison,
     )
 
-    available = get_all_detectors()
-    if not available:
-        print("[ERROR] No detectors available. Install dependencies first.")
-        return
-
-    selected = select_models(available, args.model)
-    if not selected:
-        return
-
-    print(f"[INFO] Running {len(selected)} model(s): {list(selected.keys())}")
-
-    all_results = {}
-    for name, detector_cls in selected.items():
-        print(f"\n{'=' * 70}")
-        print(f"[INFO] Loading {name}...")
-        try:
-            detector = detector_cls()
-        except Exception as e:
-            print(f"[ERROR] Failed to load {name}: {e}")
-            continue
-
+    async def invoke(model, args, name, position):
         output_dir = Path(args.output) / name if args.output else None
-        print(f"[INFO] Running benchmark with {name}...")
-        start = time.time()
-        results = run_benchmark(
-            detector, args.annotation, args.dataset_root,
-            output_dir=output_dir,
+        return run_benchmark(
+            model, args.annotation, args.dataset_root, output_dir=output_dir,
         )
-        elapsed = time.time() - start
 
-        all_results[name] = {"results": results, "time": elapsed}
-        print_results(results)
-        print(f"[INFO] {name} completed in {elapsed:.1f}s")
+    run_task(TaskSpec(
+        label="detection",
+        registry=get_all_detectors,
+        invoke=invoke,
+        printer=print_results,
+        writer=write_per_page,
+        compare=print_comparison,
+        per_page_ext=".txt",
+        parallel=False,
+    ), args)
 
-        if args.per_page:
-            per_page_file = args.per_page
-            if len(selected) > 1:
-                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".txt"
-                per_page_file = f"{base}_{name}{ext}"
-            write_per_page(results, per_page_file, name)
-
-    if len(all_results) > 1:
-        print_comparison(all_results)
-
-
-# ---------------------------------------------------------------------------
-# ocr subcommand
-# ---------------------------------------------------------------------------
 
 def run_ocr(args: argparse.Namespace) -> None:
     from recognizers import get_all_recognizers
@@ -124,146 +191,75 @@ def run_ocr(args: argparse.Namespace) -> None:
         run_ocr_benchmark, print_ocr_results, write_ocr_per_page, print_ocr_comparison,
     )
 
-    available = get_all_recognizers()
-    if not available:
-        print("[ERROR] No recognizers available. Install dependencies first.")
-        return
-
-    selected = select_models(available, args.model)
-    if not selected:
-        return
-
-    print(f"[INFO] Running {len(selected)} OCR model(s): {list(selected.keys())}")
-
-    all_results = {}
-    for name, recognizer_cls in selected.items():
-        print(f"\n{'=' * 70}")
-        print(f"[INFO] Loading {name}...")
-        try:
-            recognizer = recognizer_cls()
-        except Exception as e:
-            print(f"[ERROR] Failed to load {name}: {e}")
-            continue
-
+    async def invoke(model, args, name, position):
         output_dir = Path(args.output) / name if args.output else None
-        print(f"[INFO] Running OCR benchmark with {name}...")
-        start = time.time()
-        results = run_ocr_benchmark(
-            recognizer, args.annotation, args.dataset_root,
-            output_dir=output_dir,
+        return run_ocr_benchmark(
+            model, args.annotation, args.dataset_root, output_dir=output_dir,
         )
-        elapsed = time.time() - start
 
-        all_results[name] = {"results": results, "time": elapsed}
-        print_ocr_results(results, model_name=name)
-        print(f"[INFO] {name} completed in {elapsed:.1f}s")
+    run_task(TaskSpec(
+        label="OCR",
+        registry=get_all_recognizers,
+        invoke=invoke,
+        printer=print_ocr_results,
+        writer=write_ocr_per_page,
+        compare=print_ocr_comparison,
+        per_page_ext=".txt",
+        parallel=False,
+    ), args)
 
-        if args.per_page:
-            per_page_file = args.per_page
-            if len(selected) > 1:
-                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".txt"
-                per_page_file = f"{base}_{name}{ext}"
-            write_ocr_per_page(results, per_page_file, name)
-
-    if len(all_results) > 1:
-        print_ocr_comparison(all_results)
-
-
-# ---------------------------------------------------------------------------
-# translate subcommand
-# ---------------------------------------------------------------------------
 
 def run_translate(args: argparse.Namespace) -> None:
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print("[ERROR] OPENROUTER_API_KEY not set. Copy .env.example -> .env "
+              "and add your OpenRouter key (https://openrouter.ai/keys).")
+        return
+
     from translators import get_all_translators
     from translators.benchmark import (
         run_translate_benchmark, print_translation_results,
         write_translation_per_page, print_translation_comparison,
     )
 
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        print("[ERROR] OPENROUTER_API_KEY not set. Copy .env.example → .env "
-              "and add your OpenRouter key (https://openrouter.ai/keys).")
-        return
+    async def invoke(model, args, name, position):
+        return await run_translate_benchmark(
+            model, args.annotation, args.dataset_root,
+            concurrency=args.concurrency, max_pages=args.max_pages,
+            progress_desc=name, progress_position=position,
+        )
 
-    available = get_all_translators()
-    if not available:
-        print("[ERROR] No translators available.")
-        return
-
-    selected = select_models(available, args.model)
-    if not selected:
-        return
-
-    print(f"[INFO] Running {len(selected)} translator(s) in parallel: "
-          f"{list(selected.keys())}")
     print(f"[INFO] Per-model concurrency: {args.concurrency}"
           + (f", max_pages: {args.max_pages}" if args.max_pages else ""))
 
-    async def benchmark_one(name: str, factory, position: int):
-        try:
-            translator = factory()
-        except Exception as e:
-            print(f"[ERROR] [{name}] load failed: {e}")
-            return name, None, 0.0
-        start = time.time()
-        try:
-            results = await run_translate_benchmark(
-                translator, args.annotation, args.dataset_root,
-                concurrency=args.concurrency, max_pages=args.max_pages,
-                progress_desc=name, progress_position=position,
-            )
-        except Exception as e:
-            print(f"[ERROR] [{name}] benchmark failed: {e}")
-            return name, None, time.time() - start
-        elapsed = time.time() - start
-        return name, results, elapsed
-
-    async def run_all():
-        return await asyncio.gather(
-            *(benchmark_one(name, factory, idx)
-              for idx, (name, factory) in enumerate(selected.items()))
-        )
-
-    outputs = asyncio.run(run_all())
-
-    all_results: dict[str, dict] = {}
-    for name, results, elapsed in outputs:
-        if results is None:
-            continue
-        all_results[name] = {"results": results, "time": elapsed}
-        print_translation_results(results, model_name=name)
-
-        if args.per_page:
-            per_page_file = args.per_page
-            if len(selected) > 1:
-                base, ext = Path(per_page_file).stem, Path(per_page_file).suffix or ".tsv"
-                slug_safe = name.replace("/", "_")
-                per_page_file = f"{base}_{slug_safe}{ext}"
-            write_translation_per_page(results, per_page_file, name)
-
-    if len(all_results) > 1:
-        print_translation_comparison(all_results)
+    run_task(TaskSpec(
+        label="translation",
+        registry=get_all_translators,
+        invoke=invoke,
+        printer=print_translation_results,
+        writer=write_translation_per_page,
+        compare=print_translation_comparison,
+        per_page_ext=".tsv",
+        parallel=True,
+        slug_safe=True,
+    ), args)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="manga-bench: Benchmark SOTA models for manga text detection, OCR, and translation.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # detect
     detect_parser = subparsers.add_parser("detect", help="Run text detection benchmark")
     add_common_args(detect_parser)
 
-    # ocr
     ocr_parser = subparsers.add_parser("ocr", help="Run OCR recognition benchmark")
     add_common_args(ocr_parser)
 
-    # translate
     translate_parser = subparsers.add_parser("translate", help="Run translation benchmark")
     add_common_args(translate_parser)
     translate_parser.add_argument(
@@ -277,12 +273,8 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "detect":
-        run_detect(args)
-    elif args.command == "ocr":
-        run_ocr(args)
-    elif args.command == "translate":
-        run_translate(args)
+    dispatch = {"detect": run_detect, "ocr": run_ocr, "translate": run_translate}
+    dispatch[args.command](args)
 
 
 if __name__ == "__main__":

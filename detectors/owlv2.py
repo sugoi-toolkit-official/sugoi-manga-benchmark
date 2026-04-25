@@ -3,7 +3,9 @@
 import torch
 from PIL import Image
 from detectors.benchmark import TextDetector, xyxy_to_xywh
-from utils import get_device
+from utils import get_device, load_hf_model
+
+MODEL_ID = "google/owlv2-large-patch14-ensemble"
 
 
 class Owlv2Detector(TextDetector):
@@ -17,12 +19,9 @@ class Owlv2Detector(TextDetector):
         from transformers import Owlv2Processor, Owlv2ForObjectDetection
 
         self.device = get_device()
-        self.processor = Owlv2Processor.from_pretrained(
-            "google/owlv2-large-patch14-ensemble"
+        self.processor, self.model = load_hf_model(
+            Owlv2Processor, Owlv2ForObjectDetection, MODEL_ID, self.device,
         )
-        self.model = Owlv2ForObjectDetection.from_pretrained(
-            "google/owlv2-large-patch14-ensemble"
-        ).to(self.device).eval()
         self.threshold = threshold
 
     def detect(self, image: Image.Image) -> list[dict]:
