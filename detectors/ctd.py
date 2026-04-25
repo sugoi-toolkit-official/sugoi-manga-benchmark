@@ -11,7 +11,8 @@ import os
 import numpy as np
 import cv2
 from PIL import Image
-from detectors.benchmark import TextDetector, get_device, xyxy_to_xywh
+from detectors.benchmark import TextDetector, xyxy_to_xywh
+from utils import get_device
 
 CTD_REPO_PATH = os.environ.get("CTD_REPO_PATH", "comic-text-detector")
 

@@ -7,14 +7,13 @@ history resets on each new page. Metric: corpus-level BLEU via sacrebleu.
 """
 
 import asyncio
-import json
-import unicodedata
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import sacrebleu
 from tqdm import tqdm as _tqdm
 from tqdm.asyncio import tqdm as atqdm
+
+from utils import load_annotations, normalize_text
 
 
 def tqdm_safe_print(*args, **kwargs) -> None:
@@ -25,17 +24,6 @@ def tqdm_safe_print(*args, **kwargs) -> None:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
-
-def load_annotations(annotation_path: str) -> list[dict]:
-    """Load annotation.json and return the list of books."""
-    with open(annotation_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def normalize_text(text: str) -> str:
-    """Normalize text for fair comparison (NFKC + strip)."""
-    return unicodedata.normalize("NFKC", text).strip()
-
 
 def iter_translation_entries(
     annotations: list[dict],

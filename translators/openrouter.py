@@ -19,7 +19,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from translators.benchmark import Translator, normalize_text
+from utils import normalize_text
+from translators.benchmark import Translator
 
 
 SYSTEM_PROMPT = (

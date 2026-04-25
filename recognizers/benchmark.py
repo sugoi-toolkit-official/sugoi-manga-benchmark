@@ -4,40 +4,13 @@ Evaluates OCR models on Japanese text recognition using ground-truth
 bounding boxes from the dataset. Metrics: CER, Accuracy, 1-NED.
 """
 
-import json
-import unicodedata
 from abc import ABC, abstractmethod
 from pathlib import Path
 from PIL import Image
 
 from rapidfuzz.distance import Levenshtein
 
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-def load_annotations(annotation_path: str) -> list[dict]:
-    """Load annotation.json and return the list of books."""
-    with open(annotation_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def iter_pages(annotations: list[dict], dataset_root: str):
-    """Yield (book_title, image_rel_path, image, gt_entries) for each page."""
-    for book in annotations:
-        book_title = book["book_title"]
-        for page in book["pages"]:
-            image_rel_path = page["image_paths"]["ja"]
-            image_path = Path(dataset_root) / image_rel_path
-
-            if not image_path.exists():
-                print(f"[WARN] Image not found: {image_path}, skipping.")
-                continue
-
-            image = Image.open(image_path).convert("RGB")
-            gt_entries = page.get("text", [])
-            yield book_title, image_rel_path, image, gt_entries
+from utils import iter_pages, load_annotations, normalize_text
 
 
 # ---------------------------------------------------------------------------
@@ -62,15 +35,8 @@ class TextRecognizer(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Text normalization and metrics
+# Metrics
 # ---------------------------------------------------------------------------
-
-def normalize_text(text: str) -> str:
-    """Normalize text for fair comparison."""
-    text = unicodedata.normalize("NFKC", text)
-    text = text.strip()
-    return text
-
 
 def compute_cer(pred: str, gt: str) -> float:
     """Character Error Rate: edit_distance / max(len(gt), 1)."""

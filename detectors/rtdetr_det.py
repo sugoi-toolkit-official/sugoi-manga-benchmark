@@ -2,7 +2,8 @@
 
 import torch
 from PIL import Image
-from detectors.benchmark import TextDetector, get_device, xyxy_to_xywh
+from detectors.benchmark import TextDetector, xyxy_to_xywh
+from utils import get_device
 
 
 class RTDetrDetector(TextDetector):
