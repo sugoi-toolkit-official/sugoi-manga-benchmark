@@ -34,7 +34,7 @@ def _log_retry(retry_state) -> None:
     )
 
 
-USER_PROMPT = "Read the Japanese text in this image exactly as written. Output only the text."
+USER_PROMPT = "Read the Japanese text in this image exactly as written. Output only the text on a single line."
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -72,7 +72,7 @@ class OpenRouterRecognizer(TextRecognizer):
         except Exception as e:
             tqdm.write(f"[WARN] {self.model_id}: {type(e).__name__}: {e}")
             return ""
-        return normalize_text(raw.strip())
+        return normalize_text(raw.replace("\n", "").strip())
 
     @retry(
         stop=stop_after_attempt(_MAX_ATTEMPTS),
